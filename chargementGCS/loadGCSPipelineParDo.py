@@ -1,4 +1,5 @@
 import argparse
+import io
 import time
 import logging
 import json
@@ -18,6 +19,8 @@ from apache_beam.transforms.combiners import CountCombineFn
 from apache_beam.runners import DataflowRunner, DirectRunner
 from google.cloud import storage
 from google.cloud import bigquery
+import pandas as pd
+import io
 #from IPython import embed
 
 # Table schema for BigQuery
@@ -57,32 +60,12 @@ def getMessage(filename, messages):
 
 
 def parse_json(element):
-    #embed()
     row = json.loads(element.decode('utf-8'))
-    #embed()
     return row #CommonLog(**row)
 
 def partition_fn(elements, num):
-    #embed()
     for element in elements:
         return element
-
-
-def parse_csv(element, message):
-    lines=element.split(",")
-    #head=lines[0]
-    #lines.pop(0)
-    #schema=tables["tabledata.csv"]["fields"]
-    #names=message["address"].split("/")
-    #if names[-1] in tables:
-    #    schema= tables[names[-1]]["fields"]
-
-    schema=getSchema(message[0])["fields"]
-    dict={}
-    for col in range(len(schema)):
-        dict[schema[col]["name"]]=lines[col]
-    #embed()
-    return dict
 
 
 def getURI(element):
@@ -92,13 +75,28 @@ def getDest(element):
     return element["destination"]
 
 def cross_join(left, rights):
-    #embed()
     return [left, rights]
 
 class GetTimestamp(beam.DoFn):
   def process(self, plant, timestamp=beam.DoFn.TimestampParam):
     event_id = int(timestamp.micros / 1e6)
 
+dictTypes={
+    'int64':'INTEGER',
+    'object':'STRING',
+    'float64':'FLOAT'
+}
+
+def dataframeToSchema(dataframe):
+    schema=[]
+    for column in dataframe.columns:
+        schema.append({
+            'name':column,
+            "mode": "NULLABLE",
+            'type':dictTypes[str(dataframe.dtypes[column])]
+            }
+        )
+    return schema
 
 
 class ReadCsv(beam.DoFn):
@@ -108,26 +106,31 @@ class ReadCsv(beam.DoFn):
     def process(self, message):
         address=message["address"].split("/")
         bucket = self.storage_client.get_bucket(address[2])
-        blob = bucket.get_blob(address[3]+"/"+address[4])
+        blob_address=address[3]
+        for i in range(4, len(address)):
+            blob_address+="/"+address[i]
+        blob = bucket.get_blob(blob_address)
         downloaded_blob = blob.download_as_string().decode('utf-8')
+        buffer=io.StringIO(downloaded_blob)
+        out = pd.read_csv(filepath_or_buffer = buffer)
         lines=downloaded_blob.split("\r\n")
 
         line_count = 0
-        schema=[]
-        list_dict=[]
+        schema=dataframeToSchema(out)
+        schemal=[]
         #embed()
+        list_dict=[]
         for line in lines:
-            #embed()
             dict={}
             splitted_line=line.split(",")
             if line_count==0:
-                schema=splitted_line
+                schemal=splitted_line
                 line_count+=1
             else:
-                for col in range(len(schema)):
-                    dict[schema[col]]=splitted_line[col]
+                for col in range(len(schemal)):
+                    dict[schemal[col]]=splitted_line[col]
                 list_dict.append(dict)
-        yield [list_dict,message]
+        yield [list_dict,message,schema]
 
 
 
@@ -159,9 +162,9 @@ def run():
     
 
     def table_fn(element):
-        #embed()
         destination=element["destination"]
         return options.view_as(GoogleCloudOptions).project + "." + dataset + "."+ destination
+
 
     
 
@@ -172,13 +175,14 @@ def run():
         def process(self, pair):
             dicts=pair[0]
             message=pair[1]
+            schema=pair[2]
             table_id=table_fn(message)
             tables = self.bigquery_client.list_tables(options.view_as(GoogleCloudOptions).project + "." + dataset)
             list_id=[]
             for table in tables:
                 list_id.append(table.table_id)
             if message["destination"] not in list_id:
-                table = bigquery.Table(table_id, schema=getSchema(message)["fields"])
+                table = bigquery.Table(table_id, schema=schema)#getSchema(message)["fields"])
                 table = self.bigquery_client.create_table(table)
 
             self.bigquery_client.insert_rows_json(table_id, dicts)
@@ -192,7 +196,7 @@ def run():
     p = beam.Pipeline(options=options)
 
 
-    readData=(p 
+    readData=(p
             | 'ReadFromPubSub' >> beam.io.ReadFromPubSub(input_topic)
             | 'ParseJson' >> beam.Map(parse_json)
             #| 'With timestamps' >> beam.Map(
@@ -201,43 +205,13 @@ def run():
 
     #partData=(readData | beam.Partition(partition_fn, 2))
 
-    #dest_view=beam.pvalue.AsList(
-        #readData )
-        #| "Window2 into Fixed Intervals" >> beam.WindowInto
-        #(beam.window.GlobalWindows(),
-        # trigger=AfterAny(
-        #                  AfterCount(1),
-        #                  AfterProcessingTime(1)),
-        # accumulation_mode=AccumulationMode.DISCARDING))
-
-    #dest_view | 'Get timestamp' >> beam.ParDo(GetTimestamp())
 
     
     data_view=(readData
             | 'Read CSV files' >> beam.ParDo(ReadCsv()))
-            #| 'Get CSV address' >> beam.Map(getURI)
-            #| 'Read CSV files' >> beam.io.ReadAllFromText(skip_header_lines=1))
-            #| beam.GroupBy(lambda s: 0)
-            #| 'ParseCSV' >> beam.Map(parse_csv)
-            #| "Window3 into Fixed Intervals" >> beam.WindowInto
-        #(beam.window.FixedWindows(1),
-        # trigger=AfterProcessingTime(1),
-        # accumulation_mode=AccumulationMode.DISCARDING))
 
     data_view | 'WriteWithDynamicDestination' >> beam.ParDo(InsertCsv())
 
-    #(data_view
-    #    | 'ParseCSV' >> beam.Map(parse_csv, message=dest_view)
-    #    | 'WriteWithDynamicDestination' >> beam.io.WriteToBigQuery(
-    #            table=lambda row, dest_view : table_fn(row,dest_view[0]),
-    #            schema=lambda row, dest_view : getSchema(dest_view[0]),
-    #            table_side_inputs=(dest_view, ),
-    #            schema_side_inputs=(dest_view, ),
-    #            #additional_bq_parameters={'ignoreUnknownValues': True},
-    #            create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
-    #            write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
-    #            ))
-                 
 
     logging.getLogger().setLevel(logging.INFO)
     logging.info("Building pipeline ...")
