@@ -10,9 +10,6 @@ from apache_beam.options.pipeline_options import GoogleCloudOptions
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import StandardOptions
 from apache_beam.options.pipeline_options import DebugOptions
-from apache_beam.transforms.trigger import AfterWatermark, AfterCount, AfterProcessingTime
-from apache_beam.transforms.trigger import AccumulationMode
-from apache_beam.transforms.combiners import CountCombineFn
 from apache_beam.runners import DataflowRunner, DirectRunner
 from google.cloud import bigquery
 #from IPython import embed
@@ -108,7 +105,7 @@ def run():
         destination=element
         return options.view_as(GoogleCloudOptions).project + "." + dataset + "."+ destination
     
-    window_duration = 60
+    
     ##allowed_lateness = opts.allowed_lateness
     ##dead_letter_bucket = opts.dead_letter_bucket
 

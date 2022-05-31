@@ -5,7 +5,6 @@ import logging
 import json
 import typing
 from datetime import datetime
-from constant import tables, table_schema2, table_schema
 import apache_beam as beam
 from apache_beam.io import fileio
 from apache_beam.options.pipeline_options import GoogleCloudOptions
@@ -13,9 +12,6 @@ from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import StandardOptions
 from apache_beam.options.pipeline_options import DebugOptions
 from apache_beam.options.pipeline_options import SetupOptions
-from apache_beam.transforms.trigger import AfterWatermark, AfterCount, AfterProcessingTime, AfterAll, AfterAny
-from apache_beam.transforms.trigger import AccumulationMode
-from apache_beam.transforms.combiners import CountCombineFn
 from apache_beam.runners import DataflowRunner, DirectRunner
 from google.cloud import storage
 from google.cloud import bigquery
@@ -45,12 +41,6 @@ import io
 }"""
 # ### functions and classes
 
-def getSchema(element):
-    names=element["address"].split("/")
-    if not names[-1] in tables:
-        return tables["tabledata.csv"]
-    return tables[names[-1]]
-
 
 def getMessage(filename, messages):
     for message in messages:
@@ -74,12 +64,7 @@ def getURI(element):
 def getDest(element):
     return element["destination"]
 
-def cross_join(left, rights):
-    return [left, rights]
 
-class GetTimestamp(beam.DoFn):
-  def process(self, plant, timestamp=beam.DoFn.TimestampParam):
-    event_id = int(timestamp.micros / 1e6)
 
 dictTypes={
     'int64':'INTEGER',
@@ -182,12 +167,12 @@ def run():
             for table in tables:
                 list_id.append(table.table_id)
             if message["destination"] not in list_id:
-                table = bigquery.Table(table_id, schema=schema)#getSchema(message)["fields"])
+                table = bigquery.Table(table_id, schema=schema)
                 table = self.bigquery_client.create_table(table)
 
             self.bigquery_client.insert_rows_json(table_id, dicts)
     
-    window_duration = 60
+
     ##allowed_lateness = opts.allowed_lateness
     ##dead_letter_bucket = opts.dead_letter_bucket
 
@@ -199,8 +184,6 @@ def run():
     readData=(p
             | 'ReadFromPubSub' >> beam.io.ReadFromPubSub(input_topic)
             | 'ParseJson' >> beam.Map(parse_json)
-            #| 'With timestamps' >> beam.Map(
-            #    lambda message: beam.window.TimestampedValue(message, time.time_ns()))
             )
 
     #partData=(readData | beam.Partition(partition_fn, 2))
