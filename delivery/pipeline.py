@@ -1,4 +1,5 @@
 import argparse
+from asyncio import constants
 import io
 import time
 import logging
@@ -18,6 +19,7 @@ from google.cloud import bigquery
 from schema import Schema, And, Use, Optional, SchemaError
 import pandas as pd
 import io
+import re
 #from IPython import embed
 
 # Setting up the Beam pipeline options
@@ -35,20 +37,89 @@ Options.view_as(StandardOptions).runner = 'DataflowRunner'
 
 input_topic = 'projects/smartlive/topics/my_topic3'
 
+input_topics = ['projects/smartlive/topics/my_topic1',
+                    'projects/smartlive/topics/my_topic2',
+                    'projects/smartlive/topics/my_topic3']
+
 dataset='EtienneResults'
 
 
 
 # ### functions and classes
 
-Schema = Schema({"fileURL": str,
+MessageSchema = Schema({"fileURL": str,
 "destination":str})
+
+Constants={
+    "client":{ 
+        "delimiter": ";",
+        "max_bad_rows" : 18,
+        "encoding": "utf-8",
+        "Schema" :[
+        {
+            "name": "NAME",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "AGE",
+            "mode": "NULLABLE",
+            "type": "INTEGER"
+        }
+    ]  
+  },
+  "telephone": { 
+        "delimiter": ";",
+        "max_bad_rows" : 18,
+        "encoding": "utf-8",
+        "Schema" :[
+        {
+            "name": "name",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "number",
+            "mode": "NULLABLE",
+            "type": "INTEGER"
+        }
+    ]  
+  },
+  "address": { 
+        "delimiter": ";",
+        "max_bad_rows" : 18,
+        "encoding": "utf-8",
+        "Schema" :[
+        {
+            "name": "name",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "address",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        }
+    ]  
+  }
+}
+
+
+def getRegexCase(element):
+    keys=Constants.keys()
+    for key in keys:
+        if re.match(key, element):
+            return Constants[key]
+    return "unavailable"
+
 
 
 
 def parse_json(element):
+    from schema import Schema
+    MessageSchema = Schema({"fileURL": str,"destination":str})
     row = json.loads(element.decode('utf-8'))
-    isValid=Schema.validate(row)
+    isValid=MessageSchema.validate(row)
     return row #CommonLog(**row)
 
 
@@ -73,24 +144,26 @@ def dataframeToSchema(dataframe):
 
 class ReadCsv(beam.DoFn):
     def start_bundle(self):
+        from google.cloud import storage
         self.storage_client = storage.Client()
     
     def process(self, message):
-        address=message["address"].split("/")
+
+        address=message["fileURL"].split("/")
         bucket = self.storage_client.get_bucket(address[2])
         blob_address=address[3]
+        paramsDict=getRegexCase(address[-1])
         for i in range(4, len(address)):
             blob_address+="/"+address[i]
         blob = bucket.get_blob(blob_address)
-        downloaded_blob = blob.download_as_string().decode('utf-8')
+        downloaded_blob = blob.download_as_string().decode(paramsDict["encoding"])
         buffer=io.StringIO(downloaded_blob)
         out = pd.read_csv(filepath_or_buffer = buffer)
-        lines=downloaded_blob.split("\r\n")
+        lines=downloaded_blob.split(paramsDict["delimiter"])
 
         line_count = 0
-        schema=dataframeToSchema(out)
+        schema=paramsDict["Schema"]#dataframeToSchema(out)
         schemal=[]
-        #embed()
         list_dict=[]
         for line in lines:
             dict={}
@@ -102,6 +175,7 @@ class ReadCsv(beam.DoFn):
                 for col in range(len(schemal)):
                     dict[schemal[col]]=splitted_line[col]
                 list_dict.append(dict)
+        #embed()
         yield [list_dict,message,schema]
 
 
@@ -112,9 +186,12 @@ def get_destination_table(element):
 
 class InsertCsv(beam.DoFn):
     def start_bundle(self):
+        from google.cloud import bigquery
         self.bigquery_client = bigquery.Client()
 
     def process(self, pair):
+        from google.cloud import bigquery
+
         dicts=pair[0]
         message=pair[1]
         schema=pair[2]
@@ -137,8 +214,8 @@ class InsertCsv(beam.DoFn):
                     'type':field.field_type
                     }
                 )
-            #embed()
             comp_schema.validate(parse_schema)
+        self.bigquery_client.insert_rows_json(table_id, dicts)
 
 
 
@@ -159,9 +236,14 @@ def run():
 
     p = beam.Pipeline(options=Options)
 
+    reads=[]
+    for topic in input_topics:
+        reads.append(beam.io.gcp.pubsub.PubSubSourceDescriptor(topic))
+
+
 
     readData=(p
-            | 'ReadFromPubSub' >> beam.io.ReadFromPubSub(input_topic)
+            | 'MultipleReadFromPubSub' >> beam.io.MultipleReadFromPubSub(reads)
             | 'ParseJson' >> beam.Map(parse_json)
             )
 
