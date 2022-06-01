@@ -15,54 +15,23 @@ from apache_beam.options.pipeline_options import SetupOptions
 from apache_beam.runners import DataflowRunner, DirectRunner
 from google.cloud import storage
 from google.cloud import bigquery
+from schema import Schema, And, Use, Optional, SchemaError
 import pandas as pd
 import io
 #from IPython import embed
 
-# Table schema for BigQuery
-"""table_schema = {
-    'fields':[
-        {
-            "name": "name",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        },
-        {
-            "name": "age",
-            "mode": "NULLABLE",
-            "type": "INTEGER"
-        },
-        {
-            "name": "height",
-            "mode": "NULLABLE",
-            "type": "FLOAT"
-        }
-    ] 
-}"""
+
 # ### functions and classes
 
+schema = Schema({"address": str,
+"destination":str})
 
-def getMessage(filename, messages):
-    for message in messages:
-        if message["address"].equals(filename):
-            return message
-    return
 
 
 def parse_json(element):
     row = json.loads(element.decode('utf-8'))
+    isValid=schema.validate(row)
     return row #CommonLog(**row)
-
-def partition_fn(elements, num):
-    for element in elements:
-        return element
-
-
-def getURI(element):
-    return element["address"]
-
-def getDest(element):
-    return element["destination"]
 
 
 
@@ -151,7 +120,7 @@ def run():
         return options.view_as(GoogleCloudOptions).project + "." + dataset + "."+ destination
 
 
-    
+
 
     class InsertCsv(beam.DoFn):
         def start_bundle(self):
@@ -169,6 +138,20 @@ def run():
             if message["destination"] not in list_id:
                 table = bigquery.Table(table_id, schema=schema)
                 table = self.bigquery_client.create_table(table)
+            else:
+                comp_schema=Schema(schema)
+                dest_schema=self.bigquery_client.get_table(table_id).schema
+                parse_schema=[]
+                for field in dest_schema:
+                    parse_schema.append({
+                        'name':field.name,
+                        "mode": field.mode,
+                        'type':field.field_type
+                        }
+                    )
+                #embed()
+                comp_schema.validate(parse_schema)
+                
 
             self.bigquery_client.insert_rows_json(table_id, dicts)
     
