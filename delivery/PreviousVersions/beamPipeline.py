@@ -12,7 +12,8 @@ from apache_beam.options.pipeline_options import GoogleCloudOptions
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import StandardOptions
 from apache_beam.options.pipeline_options import DebugOptions
-from apache_beam.transforms.trigger import AfterWatermark, AfterCount, AfterProcessingTime, AccumulationMode
+from apache_beam.transforms.trigger import AfterWatermark, AfterCount, AfterProcessingTime
+from apache_beam.transforms.trigger import AccumulationMode
 from apache_beam.transforms.combiners import CountCombineFn
 from apache_beam.runners import DataflowRunner, DirectRunner
 #from IPython import embed
@@ -37,6 +38,19 @@ from apache_beam.runners import DataflowRunner, DirectRunner
         }
     ] 
 }"""
+input_topics = ['projects/smartlive/topics/my_topic1',
+                    'projects/smartlive/topics/my_topic2',
+                    'projects/smartlive/topics/my_topic3']
+
+OPTIONS = PipelineOptions( save_main_session=True, streaming=True)
+OPTIONS.view_as(GoogleCloudOptions).project = 'smartlive'
+OPTIONS.view_as(GoogleCloudOptions).region = 'europe-west1'
+OPTIONS.view_as(GoogleCloudOptions).staging_location = 'gs://testinsertbigquery/staging'
+OPTIONS.view_as(GoogleCloudOptions).temp_location = 'gs://testinsertbigquery/temp'
+OPTIONS.view_as(GoogleCloudOptions).dataflow_service_options=["enable_prime"]
+OPTIONS.view_as(DebugOptions).experiments=["use_runner_v2"]
+OPTIONS.view_as(GoogleCloudOptions).job_name = '{0}{1}'.format('chargement-fichier-streaming-primerunnerv2',time.time_ns())
+OPTIONS.view_as(StandardOptions).runner = 'DataflowRunner'
 # ### functions and classes
 
 def getSchema(element):
@@ -91,15 +105,6 @@ def run():
     
 
     # Setting up the Beam pipeline options
-    options = PipelineOptions( save_main_session=True, streaming=True)
-    options.view_as(GoogleCloudOptions).project = 'smartlive'
-    options.view_as(GoogleCloudOptions).region = 'europe-west1'
-    options.view_as(GoogleCloudOptions).staging_location = 'gs://testinsertbigquery/staging'
-    options.view_as(GoogleCloudOptions).temp_location = 'gs://testinsertbigquery/temp'
-    options.view_as(GoogleCloudOptions).dataflow_service_options=["enable_prime"]
-    options.view_as(DebugOptions).experiments=["use_runner_v2"]
-    options.view_as(GoogleCloudOptions).job_name = '{0}{1}'.format('chargement-fichier-streaming-primerunnerv2',time.time_ns())
-    options.view_as(StandardOptions).runner = 'DataflowRunner'
 
     input_topic = 'projects/smartlive/topics/my_topic2'
 
@@ -113,7 +118,7 @@ def run():
     def table_fn(row, element):
         #embed()
         destination=element["destination"]
-        return options.view_as(GoogleCloudOptions).project + ":" + dataset + "."+ destination
+        return OPTIONS.view_as(GoogleCloudOptions).project + ":" + dataset + "."+ destination
     
     window_duration = 60
     ##allowed_lateness = opts.allowed_lateness
@@ -121,11 +126,16 @@ def run():
 
 
 
-    p = beam.Pipeline(options=options)
+    p = beam.Pipeline(options=OPTIONS)
 
 
-    readData=(p
-            | 'ReadFromPubSub' >> beam.io.ReadFromPubSub(input_topic)
+    reads=[]
+    for topic in input_topics:
+        reads.append(beam.io.gcp.pubsub.PubSubSourceDescriptor(topic))
+
+
+    readData=(p 
+            | 'MultipleReadFromPubSub' >> beam.io.MultipleReadFromPubSub(reads)
             | 'ParseJson' >> beam.Map(parse_json))
 
 
@@ -153,7 +163,7 @@ def run():
                 schema=lambda row, dest_view : getSchema(dest_view),
                 table_side_inputs=(dest_view, ),
                 schema_side_inputs=(dest_view, ),
-                #additional_bq_parameters={'ignoreUnknownValues': True},
+                additional_bq_parameters={'ignoreUnknownValues': True},
                 create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
                 write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
                 ))

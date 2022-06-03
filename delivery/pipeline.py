@@ -14,28 +14,26 @@ from apache_beam.options.pipeline_options import StandardOptions
 from apache_beam.options.pipeline_options import DebugOptions
 from apache_beam.options.pipeline_options import SetupOptions
 from apache_beam.runners import DataflowRunner, DirectRunner
-from google.cloud import storage
-from google.cloud import bigquery
 from schema import Schema, And, Use, Optional, SchemaError
+from apache_beam.transforms.trigger import AfterWatermark, AfterCount, AfterProcessingTime, AccumulationMode
 import pandas as pd
 import io
 import re
+import logging
 #from IPython import embed
 
 # Setting up the Beam pipeline options
-Options = PipelineOptions( save_main_session=True, streaming=True)
-Options.view_as(GoogleCloudOptions).project = 'smartlive'
-Options.view_as(GoogleCloudOptions).region = 'europe-west1'
-Options.view_as(GoogleCloudOptions).staging_location = 'gs://testinsertbigquery/staging'
-Options.view_as(GoogleCloudOptions).temp_location = 'gs://testinsertbigquery/temp'
-Options.view_as(GoogleCloudOptions).dataflow_service_options=["enable_prime"]
-Options.view_as(DebugOptions).experiments=["use_runner_v2"]
-Options.view_as(GoogleCloudOptions).job_name = '{0}{1}'.format('chargement-fichier-streaming-primerunnerv2',time.time_ns())
-Options.view_as(SetupOptions).requirements_file="requirements.txt"
-Options.view_as(StandardOptions).runner = 'DataflowRunner'
+OPTIONS = PipelineOptions( save_main_session=True, streaming=True)
+OPTIONS.view_as(GoogleCloudOptions).project = 'smartlive'
+OPTIONS.view_as(GoogleCloudOptions).region = 'europe-west1'
+OPTIONS.view_as(GoogleCloudOptions).staging_location = 'gs://testinsertbigquery/staging'
+OPTIONS.view_as(GoogleCloudOptions).temp_location = 'gs://testinsertbigquery/temp'
+OPTIONS.view_as(GoogleCloudOptions).dataflow_service_options=["enable_prime"]
+OPTIONS.view_as(DebugOptions).experiments=["use_runner_v2"]
+OPTIONS.view_as(GoogleCloudOptions).job_name = '{0}{1}'.format('chargement-fichier-streaming',time.time_ns())
+OPTIONS.view_as(SetupOptions).requirements_file="requirements.txt"
+OPTIONS.view_as(StandardOptions).runner = 'DataflowRunner'
 
-
-input_topic = 'projects/smartlive/topics/my_topic3'
 
 input_topics = ['projects/smartlive/topics/my_topic1',
                     'projects/smartlive/topics/my_topic2',
@@ -47,10 +45,10 @@ dataset='EtienneResults'
 
 # ### functions and classes
 
-MessageSchema = Schema({"fileURL": str,
+MESSAGE_SCHEMA = Schema({"fileURL": str,
 "destination":str})
 
-Constants={
+STRUCTURE_SOURCE={
     "client":{ 
         "delimiter": ";",
         "max_bad_rows" : 18,
@@ -105,12 +103,52 @@ Constants={
 }
 
 
-def getRegexCase(element):
-    keys=Constants.keys()
+TABLE_OUTPUT_SCHEMAS={
+    "etienne12":[
+        {
+            "name": "NAME",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "AGE",
+            "mode": "NULLABLE",
+            "type": "INTEGER"
+        }
+    ],
+    "etienne13":[
+        {
+            "name": "name",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "number",
+            "mode": "NULLABLE",
+            "type": "INTEGER"
+        }
+    ],
+    "etienne14":[
+        {
+            "name": "name",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "address",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        }
+    ]
+}
+
+
+def get_struct_file(element):
+    keys=STRUCTURE_SOURCE.keys()
     for key in keys:
         if re.match(key, element):
-            return Constants[key]
-    return "unavailable"
+            return STRUCTURE_SOURCE[key]
+    return "unavailable"#alert
 
 
 
@@ -142,80 +180,56 @@ def dataframeToSchema(dataframe):
     return schema
 
 
+
+
 class ReadCsv(beam.DoFn):
-    def start_bundle(self):
-        from google.cloud import storage
-        self.storage_client = storage.Client()
+    #def setup(self):
+    #    from google.cloud import storage
+    #    logging.warning('Creation Storage client!')
+    #    self.storage_client = storage.Client()
     
     def process(self, message):
+        with beam.io.gcsio.GcsIO().open(filename=message["fileURL"], mode="r") as f:
+            file_name=message["fileURL"].split("/")[-1]
+            file_struct=get_struct_file(file_name)
+            file_lines=f.read().decode(file_struct['encoding']).split(file_struct["delimiter"])
+            
+            logging.warning('Data processed: '+file_name)
 
-        address=message["fileURL"].split("/")
-        bucket = self.storage_client.get_bucket(address[2])
-        blob_address=address[3]
-        paramsDict=getRegexCase(address[-1])
-        for i in range(4, len(address)):
-            blob_address+="/"+address[i]
-        blob = bucket.get_blob(blob_address)
-        downloaded_blob = blob.download_as_string().decode(paramsDict["encoding"])
-        buffer=io.StringIO(downloaded_blob)
-        out = pd.read_csv(filepath_or_buffer = buffer)
-        lines=downloaded_blob.split(paramsDict["delimiter"])
-
-        line_count = 0
-        schema=paramsDict["Schema"]#dataframeToSchema(out)
-        schemal=[]
-        list_dict=[]
-        for line in lines:
-            dict={}
-            splitted_line=line.split(",")
-            if line_count==0:
-                schemal=splitted_line
-                line_count+=1
-            else:
-                for col in range(len(schemal)):
-                    dict[schemal[col]]=splitted_line[col]
-                list_dict.append(dict)
-        #embed()
-        yield [list_dict,message,schema]
+            line_count = 0
+            schema=file_struct["Schema"]#dataframeToSchema(out)
+            for line in file_lines:
+                output_row={}
+                splitted_line=line.split(",")
+                if line_count==0:
+                    line_count+=1
+                else:
+                    for index in range(len(schema)):
+                        output_row[schema[index]['name']]=splitted_line[index]
+                    output_row["destination"]=message["destination"]
+                    #embed()
+                    yield output_row
+        
 
 
 def get_destination_table(element):
-        destination=element["destination"]
-        return Options.view_as(GoogleCloudOptions).project + "." + dataset + "."+ destination
+    destination=element["destination"]
+    return OPTIONS.view_as(GoogleCloudOptions).project + ":" + dataset + "."+ destination
 
 
-class InsertCsv(beam.DoFn):
-    def start_bundle(self):
-        from google.cloud import bigquery
-        self.bigquery_client = bigquery.Client()
+def get_schema(table):
+    address=table.split(".")
+    table_name=address[-1]
+    schema={"fields":TABLE_OUTPUT_SCHEMAS[table_name]}
+    return schema
 
-    def process(self, pair):
-        from google.cloud import bigquery
 
-        dicts=pair[0]
-        message=pair[1]
-        schema=pair[2]
-        table_id=get_destination_table(message)
-        tables = self.bigquery_client.list_tables(Options.view_as(GoogleCloudOptions).project + "." + dataset)
-        list_id=[]
-        for table in tables:
-            list_id.append(table.table_id)
-        if message["destination"] not in list_id:
-            table = bigquery.Table(table_id, schema=schema)
-            table = self.bigquery_client.create_table(table)
-        else:
-            comp_schema=Schema(schema)
-            dest_schema=self.bigquery_client.get_table(table_id).schema
-            parse_schema=[]
-            for field in dest_schema:
-                parse_schema.append({
-                    'name':field.name,
-                    "mode": field.mode,
-                    'type':field.field_type
-                    }
-                )
-            comp_schema.validate(parse_schema)
-        self.bigquery_client.insert_rows_json(table_id, dicts)
+
+#def getResults(element):
+#    embed()
+#    return element
+
+
 
 
 
@@ -234,7 +248,7 @@ def run():
 
 
 
-    p = beam.Pipeline(options=Options)
+    p = beam.Pipeline(options=OPTIONS)
 
     reads=[]
     for topic in input_topics:
@@ -252,10 +266,22 @@ def run():
 
     
     data_view=(readData
-            | 'Read CSV files' >> beam.ParDo(ReadCsv()))
+            #| 'Get CSV address' >> beam.Map(lambda element: element["fileURL"])
+            | 'Read CSV files' >> beam.ParDo(ReadCsv()))#beam.io.textio.ReadFromTextWithFilename("gs://testinsertbigquery/EtienneData/client1.csv"))
 
-    data_view | 'WriteWithDynamicDestination' >> beam.ParDo(InsertCsv())
+    
+    #groups=(({"messages":readData,"csv":data_view})
+    #    | 'Merge' >> beam.CoGroupByKey()
+    #    | beam.Map(getResults))
 
+    data_view | 'WriteWithDynamicDestination' >> beam.io.WriteToBigQuery(
+                table=get_destination_table,
+                schema=get_schema,
+                ignore_unknown_columns=True,
+                #additional_bq_parameters={'ignoreUnknownValues': True,'maxBadRecords': 1000},
+                create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER,
+                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
+                )
 
     logging.getLogger().setLevel(logging.INFO)
     logging.info("Building pipeline ...")
