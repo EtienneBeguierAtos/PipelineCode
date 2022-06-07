@@ -20,6 +20,7 @@ import pandas as pd
 import io
 import re
 import logging
+from constants import MESSAGE_SCHEMA,TABLE_OUTPUT_SCHEMAS, STRUCTURE_SOURCE, REJECT_SCHEMA
 #from IPython import embed
 
 # Setting up the Beam pipeline options
@@ -35,112 +36,15 @@ OPTIONS.view_as(SetupOptions).requirements_file="requirements.txt"
 OPTIONS.view_as(StandardOptions).runner = 'DataflowRunner'
 
 
-input_topics = ['projects/smartlive/topics/my_topic1',
+INPUT_TOPICS = ['projects/smartlive/topics/my_topic1',
                     'projects/smartlive/topics/my_topic2',
                     'projects/smartlive/topics/my_topic3']
 
-dataset='EtienneResults'
+DATASET='EtienneResults'
 
-
+skipLeadingRows=0
 
 # ### functions and classes
-
-MESSAGE_SCHEMA = Schema({"fileURL": str,
-"destination":str})
-
-STRUCTURE_SOURCE={
-    "client":{ 
-        "delimiter": ";",
-        "max_bad_rows" : 18,
-        "encoding": "utf-8",
-        "Schema" :[
-        {
-            "name": "NAME",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        },
-        {
-            "name": "AGE",
-            "mode": "NULLABLE",
-            "type": "INTEGER"
-        }
-    ]  
-  },
-  "telephone": { 
-        "delimiter": ";",
-        "max_bad_rows" : 18,
-        "encoding": "utf-8",
-        "Schema" :[
-        {
-            "name": "name",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        },
-        {
-            "name": "number",
-            "mode": "NULLABLE",
-            "type": "INTEGER"
-        }
-    ]  
-  },
-  "address": { 
-        "delimiter": ";",
-        "max_bad_rows" : 18,
-        "encoding": "utf-8",
-        "Schema" :[
-        {
-            "name": "name",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        },
-        {
-            "name": "address",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        }
-    ]  
-  }
-}
-
-
-TABLE_OUTPUT_SCHEMAS={
-    "etienne12":[
-        {
-            "name": "NAME",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        },
-        {
-            "name": "AGE",
-            "mode": "NULLABLE",
-            "type": "INTEGER"
-        }
-    ],
-    "etienne13":[
-        {
-            "name": "name",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        },
-        {
-            "name": "number",
-            "mode": "NULLABLE",
-            "type": "INTEGER"
-        }
-    ],
-    "etienne14":[
-        {
-            "name": "name",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        },
-        {
-            "name": "address",
-            "mode": "NULLABLE",
-            "type": "STRING"
-        }
-    ]
-}
 
 
 def get_struct_file(element):
@@ -148,38 +52,24 @@ def get_struct_file(element):
     for key in keys:
         if re.match(key, element):
             return STRUCTURE_SOURCE[key]
+    logging.warning("no structure associated to filename: "+element)
     return "unavailable"#alert
 
 
 
 
 def parse_json(element):
-    from schema import Schema
-    MessageSchema = Schema({"fileURL": str,"destination":str})
+    #from schema import Schema
+    #MessageSchema = Schema({"fileURL": str,"destination":str})
     row = json.loads(element.decode('utf-8'))
-    isValid=MessageSchema.validate(row)
+    isValid=MESSAGE_SCHEMA.validate(row)
     return row #CommonLog(**row)
 
+def is_rejected(element):
+    return element["stacktrace"]!=""
 
-
-dictTypes={
-    'int64':'INTEGER',
-    'object':'STRING',
-    'float64':'FLOAT'
-}
-
-def dataframeToSchema(dataframe):
-    schema=[]
-    for column in dataframe.columns:
-        schema.append({
-            'name':column,
-            "mode": "NULLABLE",
-            'type':dictTypes[str(dataframe.dtypes[column])]
-            }
-        )
-    return schema
-
-
+def is_valid(element):
+    return element["stacktrace"]==""
 
 
 class ReadCsv(beam.DoFn):
@@ -198,23 +88,26 @@ class ReadCsv(beam.DoFn):
 
             line_count = 0
             schema=file_struct["Schema"]#dataframeToSchema(out)
+            #embed()
             for line in file_lines:
-                output_row={}
+                output_row={"stacktrace":"","source_file":file_name}
                 splitted_line=line.split(",")
-                if line_count==0:
+                if line_count<skipLeadingRows:
                     line_count+=1
+                elif len(splitted_line)<len(schema):
+                    output_row["stacktrace"]="error_line_index"
+                    yield output_row
                 else:
                     for index in range(len(schema)):
                         output_row[schema[index]['name']]=splitted_line[index]
                     output_row["destination"]=message["destination"]
-                    #embed()
                     yield output_row
         
 
 
 def get_destination_table(element):
     destination=element["destination"]
-    return OPTIONS.view_as(GoogleCloudOptions).project + ":" + dataset + "."+ destination
+    return OPTIONS.view_as(GoogleCloudOptions).project + ":" + DATASET + "."+ destination
 
 
 def get_schema(table):
@@ -224,13 +117,19 @@ def get_schema(table):
     return schema
 
 
+class GetRejectData(beam.DoFn):
+  def process(self, element, timestamp=beam.DoFn.TimestampParam):
+    yield {"timestamp":timestamp.to_utc_datetime(), "stacktrace":element["stacktrace"], "source_file":element["source_file"]}
+
+
 
 #def getResults(element):
 #    embed()
 #    return element
 
 
-
+NUMBER_INSERTED_LINES=0
+NUMBER_REJECTED_LINES=0
 
 
 
@@ -239,7 +138,14 @@ def get_schema(table):
 
 def run():
     # Command line arguments
-    parser = argparse.ArgumentParser(description='Load from Json from Pub/Sub into a dynamic BigQuery output')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--skipLeadingRows')
+    opts, pipeline_opts = parser.parse_known_args()
+
+
+    global skipLeadingRows
+    skipLeadingRows = int(opts.skipLeadingRows)
+
 
     
 
@@ -251,7 +157,7 @@ def run():
     p = beam.Pipeline(options=OPTIONS)
 
     reads=[]
-    for topic in input_topics:
+    for topic in INPUT_TOPICS:
         reads.append(beam.io.gcp.pubsub.PubSubSourceDescriptor(topic))
 
 
@@ -274,14 +180,28 @@ def run():
     #    | 'Merge' >> beam.CoGroupByKey()
     #    | beam.Map(getResults))
 
-    data_view | 'WriteWithDynamicDestination' >> beam.io.WriteToBigQuery(
+    (data_view 
+            | 'Filter rejects' >> beam.Filter(is_rejected)
+            | 'Format error reports' >> beam.ParDo(GetRejectData())
+            | 'writeInRejectsTable'>> beam.io.WriteToBigQuery(
+                table=OPTIONS.view_as(GoogleCloudOptions).project + ":" + DATASET + ".rejects",
+                schema=REJECT_SCHEMA,
+                ignore_unknown_columns=True,
+                #additional_bq_parameters={'ignoreUnknownValues': True,'maxBadRecords': 1000},
+                create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER,
+                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
+                ))
+
+    (data_view 
+            | 'Get valid lines' >> beam.Filter(is_valid)
+            | 'WriteWithDynamicDestination' >> beam.io.WriteToBigQuery(
                 table=get_destination_table,
                 schema=get_schema,
                 ignore_unknown_columns=True,
                 #additional_bq_parameters={'ignoreUnknownValues': True,'maxBadRecords': 1000},
                 create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER,
                 write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
-                )
+                ))
 
     logging.getLogger().setLevel(logging.INFO)
     logging.info("Building pipeline ...")
@@ -290,6 +210,3 @@ def run():
 
 if __name__ == '__main__':
   run()
-    
-
-    
