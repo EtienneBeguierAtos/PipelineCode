@@ -117,6 +117,25 @@ REJECT_SCHEMA={
             "type": "STRING"
         }]}
 
+
+MONITORING_TABLE_SCHEMA={
+    "fields":[
+        {
+            "name": "timestamp",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "number_inserted_rows",
+            "mode": "NULLABLE",
+            "type": "INTEGER"
+        },
+        {
+            "name": "number_rejected_rows",
+            "mode": "NULLABLE",
+            "type": "INTEGER"
+        }]}
+
 dictTypes={
     'int64':'INTEGER',
     'object':'STRING',

@@ -1,0 +1,3 @@
+{"fileURL":"gs://testinsertbigquery/EtienneData/client1.csv","destination":"etienne12"}
+{"fileURL":"gs://testinsertbigquery/EtienneData/telephone1.csv","destination":"etienne13"}
+{"fileURL":"gs://testinsertbigquery/EtienneData/address1.csv","destination":"etienne14"}

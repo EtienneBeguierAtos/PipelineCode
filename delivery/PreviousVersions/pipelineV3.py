@@ -20,9 +20,8 @@ import pandas as pd
 import io
 import re
 import logging
-from constants import MESSAGE_SCHEMA,TABLE_OUTPUT_SCHEMAS, STRUCTURE_SOURCE, REJECT_SCHEMA,MONITORING_TABLE_SCHEMA
+from constants import MESSAGE_SCHEMA,TABLE_OUTPUT_SCHEMAS, STRUCTURE_SOURCE, REJECT_SCHEMA
 #from IPython import embed
-import sys
 
 # Setting up the Beam pipeline options
 OPTIONS = PipelineOptions( save_main_session=True, streaming=True)
@@ -43,10 +42,7 @@ INPUT_TOPICS = ['projects/smartlive/topics/my_topic1',
 
 DATASET='EtienneResults'
 
-parameters={"skipLeadingRows":0}
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--skipLeadingRows',default=1, type=int)
+skipLeadingRows=0
 
 # ### functions and classes
 
@@ -75,14 +71,6 @@ def is_rejected(element):
 def is_valid(element):
     return element["stacktrace"]==""
 
-def check_errors_in_line(line,schema):
-    if len(line)!=len(schema):
-        return "error_line_index"
-    else:
-        return ""
-
-       
-
 
 class ReadCsv(beam.DoFn):
     #def setup(self):
@@ -90,54 +78,30 @@ class ReadCsv(beam.DoFn):
     #    logging.warning('Creation Storage client!')
     #    self.storage_client = storage.Client()
     
-    def process(self, message, timestamp=beam.DoFn.TimestampParam):
+    def process(self, message):
         with beam.io.gcsio.GcsIO().open(filename=message["fileURL"], mode="r") as f:
             file_name=message["fileURL"].split("/")[-1]
             file_struct=get_struct_file(file_name)
             file_lines=f.read().decode(file_struct['encoding']).split(file_struct["delimiter"])
-            file_max_bad_rows=file_struct["max_bad_rows"]
             
             logging.warning('Data processed: '+file_name)
 
             line_count = 0
             schema=file_struct["Schema"]#dataframeToSchema(out)
-            rejected_lines_count=0
             #embed()
-            output_rows={"rows":[], "timestamp":timestamp.to_utc_datetime(), "is_valid_file":True}
             for line in file_lines:
-                if line_count<parameters["skipLeadingRows"]:
-                    line_count+=1
-                    continue
                 output_row={"stacktrace":"","source_file":file_name}
                 splitted_line=line.split(",")
-                line_error=check_errors_in_line(splitted_line, schema)
-                if line_error=="":
+                if line_count<skipLeadingRows:
+                    line_count+=1
+                elif len(splitted_line)<len(schema):
+                    output_row["stacktrace"]="error_line_index"
+                    yield output_row
+                else:
                     for index in range(len(schema)):
                         output_row[schema[index]['name']]=splitted_line[index]
-                else:
-                    rejected_lines_count+=1
-                output_row["stacktrace"]=line_error
-                output_row["destination"]=message["destination"]
-                output_row["timestamp"]=timestamp.to_utc_datetime()
-                output_rows["rows"].append(output_row)
-            if rejected_lines_count>file_max_bad_rows:
-                output_rows["is_valid_file"]=False
-            output_rows["number_invalid_rows"]=rejected_lines_count
-            #embed()
-            yield output_rows
-
-
-class SplitFileData(beam.DoFn):
-    #def setup(self):
-    #    from google.cloud import storage
-    #    logging.warning('Creation Storage client!')
-    #    self.storage_client = storage.Client()
-    
-    def process(self, element):
-        for row in element["rows"]:
-            if row["stacktrace"]=="" and not element["is_valid_file"]:
-                row["stacktrace"]="too_many_invalid_rows_in_file"
-            yield row
+                    output_row["destination"]=message["destination"]
+                    yield output_row
         
 
 
@@ -157,16 +121,15 @@ class GetRejectData(beam.DoFn):
   def process(self, element, timestamp=beam.DoFn.TimestampParam):
     yield {"timestamp":timestamp.to_utc_datetime(), "stacktrace":element["stacktrace"], "source_file":element["source_file"]}
 
-def GetMonitoringData(file_data):
-    output={"timestamp":file_data["timestamp"]}
-    if file_data["is_valid_file"]:
-        output["number_inserted_rows"]=len(file_data["rows"])-file_data["number_invalid_rows"]
-        output["number_rejected_rows"]=file_data["number_invalid_rows"]
-    else:
-        output["number_inserted_rows"]=0
-        output["number_rejected_rows"]=len(file_data["rows"])
-    return output
 
+
+#def getResults(element):
+#    embed()
+#    return element
+
+
+NUMBER_INSERTED_LINES=0
+NUMBER_REJECTED_LINES=0
 
 
 
@@ -175,11 +138,14 @@ def GetMonitoringData(file_data):
 
 def run():
     # Command line arguments
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--skipLeadingRows')
     opts, pipeline_opts = parser.parse_known_args()
 
 
-    
-    parameters["skipLeadingRows"] = int(opts.skipLeadingRows)
+    global skipLeadingRows
+    skipLeadingRows = int(opts.skipLeadingRows)
+
 
     
 
@@ -209,27 +175,15 @@ def run():
             #| 'Get CSV address' >> beam.Map(lambda element: element["fileURL"])
             | 'Read CSV files' >> beam.ParDo(ReadCsv()))#beam.io.textio.ReadFromTextWithFilename("gs://testinsertbigquery/EtienneData/client1.csv"))
 
-    monitoring_branch=(data_view
-            | 'Format Monitoring Report' >> beam.Map(GetMonitoringData)
-            | 'WriteInMonitoringTable'>> beam.io.WriteToBigQuery(
-                table=OPTIONS.view_as(GoogleCloudOptions).project + ":" + DATASET + ".monitoring",
-                schema=MONITORING_TABLE_SCHEMA,
-                ignore_unknown_columns=True,
-                #additional_bq_parameters={'ignoreUnknownValues': True,'maxBadRecords': 1000},
-                create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER,
-                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
-                ))
     
-    rows_view=(data_view | 'Split file data in rows' >> beam.ParDo(SplitFileData()))
-
     #groups=(({"messages":readData,"csv":data_view})
     #    | 'Merge' >> beam.CoGroupByKey()
     #    | beam.Map(getResults))
 
-    (rows_view 
+    (data_view 
             | 'Filter rejects' >> beam.Filter(is_rejected)
             | 'Format error reports' >> beam.ParDo(GetRejectData())
-            | 'WriteInRejectsTable'>> beam.io.WriteToBigQuery(
+            | 'writeInRejectsTable'>> beam.io.WriteToBigQuery(
                 table=OPTIONS.view_as(GoogleCloudOptions).project + ":" + DATASET + ".rejects",
                 schema=REJECT_SCHEMA,
                 ignore_unknown_columns=True,
@@ -238,7 +192,7 @@ def run():
                 write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
                 ))
 
-    (rows_view 
+    (data_view 
             | 'Get valid lines' >> beam.Filter(is_valid)
             | 'WriteWithDynamicDestination' >> beam.io.WriteToBigQuery(
                 table=get_destination_table,
@@ -252,7 +206,7 @@ def run():
     logging.getLogger().setLevel(logging.INFO)
     logging.info("Building pipeline ...")
 
-    p.run()#.wait_until_finish()
+    p.run().wait_until_finish()
 
 if __name__ == '__main__':
-    run()
+  run()
