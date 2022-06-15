@@ -1,6 +1,6 @@
 import unittest
 import sys
-import pipeline2
+import pipeline
 import messages
 import time
 from google.cloud import bigquery
@@ -23,19 +23,23 @@ class TestStringMethods(unittest.TestCase):
         telephone_count = list(client.query("""SELECT COUNT(*) FROM `smartlive.EtienneResults.telephone`""").result())
         self.assertEqual(telephone_count[0].get('f0_'), 2)
 
+    def test_rejects_count(self):
+        address_rejects_count = list(client.query("""SELECT COUNT(*) FROM `smartlive.EtienneRejects.address`""").result())
+        self.assertEqual(address_rejects_count[0].get('f0_'), 1)
+
 
 
 #exec('pipeline.py')
 #subprocess.call(["python3 pipeline.py","--skipLeadingRows=1"])
 
-pipeline2.run()
+pipeline.run()
 time.sleep(10)
 messages.run()
 #time.sleep(20)
 #messages.run()
 #time.sleep(20)
 #messages.run()
-time.sleep(120)
+time.sleep(10)
 
 """
 x = threading.Thread(target=pipeline2.run)

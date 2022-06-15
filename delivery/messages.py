@@ -1,7 +1,7 @@
 """Publishes multiple messages to a Pub/Sub topic with an error handler."""
 from concurrent import futures
 from google.cloud import pubsub_v1
-import json
+import time
 
 #TODO(developer)
 project_id = "smartlive"
@@ -28,7 +28,6 @@ publish_futures = []
 
     return callback"""
 file_path = "./message.json"
-dict={"address":"gs://testinsertbigquery/EtienneData/tabledata2.csv","destination":"etienne11"}
 def run():
     with open(file_path, 'r') as j:
         data=j.read().splitlines()
@@ -39,13 +38,16 @@ def run():
             # When you publish a message, the client returns a future.
             publish_future1 = publisher.publish(topics[i], element.encode("utf-8"))
             publish_futures.append(publish_future1)
+            time.sleep(21)
             #futures.wait(publish_futures, return_when=futures.ALL_COMPLETED)
             #publish_future2 = publisher.publish(topic_path2, element.encode("utf-8"))
             #publish_futures.append(publish_future2)
             #futures.wait(publish_futures, return_when=futures.ALL_COMPLETED)
             #publish_future3 = publisher.publish(topic_path1, element.encode("utf-8"))
             #publish_futures.append(publish_future3)
-
+        #time.sleep(10)
+        #publish_future = publisher.publish(topics[0], data[0].encode("utf-8"))
+        #publish_futures.append(publish_future)
         # Wait for all the publish futures to resolve before exiting.
         futures.wait(publish_futures, return_when=futures.ALL_COMPLETED)
 

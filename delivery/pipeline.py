@@ -21,7 +21,7 @@ import io
 import re
 import logging
 from constants import MESSAGE_SCHEMA,TABLE_OUTPUT_SCHEMAS, STRUCTURE_SOURCE, REJECT_SCHEMA,MONITORING_TABLE_SCHEMA
-from IPython import embed
+#from IPython import embed
 #import sys
 
 # Setting up the Beam pipeline options
@@ -95,13 +95,13 @@ def check_errors_in_line(line,schema):
        
 
 
-class ReadCsv(beam.DoFn):
+
     #def setup(self):
     #    from google.cloud import storage
     #    logging.warning('Creation Storage client!')
     #    self.storage_client = storage.Client()
     
-    def process(self, message, timestamp=beam.DoFn.TimestampParam):
+def read_csv(message):
         with beam.io.gcsio.GcsIO().open(filename=message["fileURL"], mode="r") as f:
             file_name=message["fileURL"].split("/")[-1]
             file_struct=get_struct_file(file_name)
@@ -151,6 +151,7 @@ class ReadCsv(beam.DoFn):
             yield monitoring_report
 """
 def read_line(element):
+    #embed()
     line=element["data"]
     schema=element["schema"]
     output_row={"is_line":True,"stacktrace":"","source_file":element["source_file"]}
@@ -159,8 +160,6 @@ def read_line(element):
     if line_error=="":
         for index in range(len(schema)):
             output_row[schema[index]['name']]=splitted_line[index]
-    else:
-        rejected_lines_count+=1
     output_row["raw_data"]=splitted_line
     output_row["stacktrace"]=line_error
     output_row["destination"]=element["message"]["destination"]
@@ -184,7 +183,6 @@ class SplitFileData(beam.DoFn):
 
 def split_file(element):
     lines=element["data"].split
-        
 
 
 def get_destination_table(element):
@@ -209,17 +207,24 @@ def get_reject_data(file_data):
             "raw_data":str(file_data["raw_data"]),
             "destination":file_data["destination"]}
 
-def get_monitoring_data(file_data):
-    output={"timestamp":file_data["timestamp"]}
-    if file_data["is_valid_file"]:
-        output["event"]="SUCCESS"
-        output["number_inserted_rows"]=len(file_data["rows"])-file_data["number_invalid_rows"]
-        output["number_rejected_rows"]=file_data["number_invalid_rows"]
-    else:
-        output["event"]="WARNING"
-        output["number_inserted_rows"]=0
-        output["number_rejected_rows"]=len(file_data["rows"])
-    return output
+def get_monitoring_data(groups_of_lines):
+    number_inserted_rows=0
+    number_rejected_rows=0
+    valids_and_rejects=list(list(groups_of_lines)[1])
+    for group in valids_and_rejects:
+        if group[0].is_valid:
+            number_inserted_rows=len(group[1])
+        else:
+            number_rejected_rows=len(group[1])
+    monitoring_report={ "event":"SUCCESS",
+                        "timestamp":valids_and_rejects[0][1][0]["timestamp"],
+                        "number_inserted_rows":number_inserted_rows,
+                        "number_rejected_rows": number_rejected_rows,
+                        "message_id":valids_and_rejects[0][1][0]["id"]}
+    if number_rejected_rows!=0:
+        monitoring_report["event"]="WARNING"
+    #embed()
+    return monitoring_report
 
 
 
@@ -262,7 +267,7 @@ def run():
             | 'GetTimestamp' >> beam.ParDo(get_timestamp())
             | "Window into Fixed Intervals" >> beam.WindowInto(
                 beam.window.FixedWindows(1),
-                trigger=AfterProcessingTime(5),
+                #trigger=AfterProcessingTime(5),
                 accumulation_mode=AccumulationMode.DISCARDING)
             )
 
@@ -284,12 +289,13 @@ def run():
     data=(read_messages
             #| 'Get CSV address' >> beam.Map(lambda element: element["fileURL"])
             | 'ParseJson' >> beam.Map(parse_json)
-            | 'Read CSV files' >> beam.ParDo(ReadCsv())
-            | 'Split words' >> beam.FlatMap(split_file))#beam.io.textio.ReadFromTextWithFilename("gs://testinsertbigquery/EtienneData/client1.csv"))
+            | 'Read CSV files' >> beam.FlatMap(read_csv)
+            | 'Read lines' >> beam.Map(read_line))#beam.io.textio.ReadFromTextWithFilename("gs://testinsertbigquery/EtienneData/client1.csv"))
 
     monitoring_branch=(data
-            | 'FilterMonitoringReports' >> beam.Filter(lambda element: element["is_line"]==False)
-            #| 'Format Monitoring Report' >> beam.Map(get_monitoring_data)
+            | 'FilterMonitoringReports' >> beam.GroupBy(id=lambda element: element["id"], is_valid=lambda element: element["stacktrace"]=="")
+            | 'FilterMonitoringReports2' >> beam.GroupBy(id=lambda element: list(element)[0].id)
+            | 'Format Monitoring Report' >> beam.Map(get_monitoring_data)
             | 'WriteInMonitoringTable'>> beam.io.WriteToBigQuery(
                 table=OPTIONS.view_as(GoogleCloudOptions).project + ":" + DATASET + ".monitoring",
                 schema=MONITORING_TABLE_SCHEMA,
