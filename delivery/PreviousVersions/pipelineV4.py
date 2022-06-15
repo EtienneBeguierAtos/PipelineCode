@@ -21,7 +21,7 @@ import io
 import re
 import logging
 from constants import MESSAGE_SCHEMA,TABLE_OUTPUT_SCHEMAS, STRUCTURE_SOURCE, REJECT_SCHEMA,MONITORING_TABLE_SCHEMA
-from IPython import embed
+#from IPython import embed
 #import sys
 
 # Setting up the Beam pipeline options
@@ -31,10 +31,10 @@ OPTIONS.view_as(GoogleCloudOptions).region = 'europe-west1'
 OPTIONS.view_as(GoogleCloudOptions).staging_location = 'gs://testinsertbigquery/staging'
 OPTIONS.view_as(GoogleCloudOptions).temp_location = 'gs://testinsertbigquery/temp'
 OPTIONS.view_as(GoogleCloudOptions).dataflow_service_options=["enable_prime"]
-OPTIONS.view_as(DebugOptions).experiments=["use_runner_v2","use_deprecated_read"]
+OPTIONS.view_as(DebugOptions).experiments=["use_runner_v2"]
 OPTIONS.view_as(GoogleCloudOptions).job_name = '{0}{1}'.format('chargement-fichier-streaming',time.time_ns())
 OPTIONS.view_as(SetupOptions).requirements_file="requirements.txt"
-OPTIONS.view_as(StandardOptions).runner = 'DirectRunner'
+OPTIONS.view_as(StandardOptions).runner = 'DataflowRunner'
 
 
 INPUT_TOPICS = ['projects/smartlive/topics/my_topic1',
@@ -44,7 +44,7 @@ INPUT_TOPICS = ['projects/smartlive/topics/my_topic1',
 DATASET='EtienneResults'
 REJECT_DATASET='EtienneRejects'
 
-parameters={"skipLeadingRows":1}
+parameters={"skipLeadingRows":0}
 
 PARSER = argparse.ArgumentParser()
 PARSER.add_argument('--skipLeadingRows',default=1, type=int)
@@ -67,7 +67,6 @@ class get_timestamp(beam.DoFn):
     #    self.storage_client = storage.Client()
     
     def process(self, element, timestamp=beam.DoFn.TimestampParam):
-        #embed()
         yield {"timestamp":timestamp.to_utc_datetime(),"message":element}
         
 
@@ -75,15 +74,14 @@ class get_timestamp(beam.DoFn):
 def parse_json(element):
     #from schema import Schema
     #MessageSchema = Schema({"fileURL": str,"destination":str})["data"]
-    row = json.loads(element["message"].data.decode('utf-8'))
+    row = json.loads(element["message"].decode('utf-8'))
     try:
         isValid=MESSAGE_SCHEMA.validate(row)
     except SchemaError:
         return {"stacktrace": "invalid_message_format","timestamp":element["timestamp"]}
     else:
         row["timestamp"]=element["timestamp"]
-        row["id"]=element["message"].message_id
-        logging.warning('attributes:  '+str(element["message"].message_id))
+        #row["id"]=element["message"]["attributes"]["messageId"]
         return row #CommonLog(**row)
 
 def check_errors_in_line(line,schema):
@@ -107,22 +105,19 @@ class ReadCsv(beam.DoFn):
             file_struct=get_struct_file(file_name)
             file_lines=f.read().decode(file_struct['encoding']).split(file_struct["delimiter"])
             file_max_bad_rows=file_struct["max_bad_rows"]
-            schema=file_struct["Schema"]
-            skip_lines=parameters["skipLeadingRows"]
-            del file_lines[0:skip_lines]
+            
             logging.warning('Data processed: '+file_name)
-            return[{"data":line,"message":message,"schema":schema,"source_file":file_name} for line in file_lines]
 
-"""
             line_count = 0
             schema=file_struct["Schema"]#dataframeToSchema(out)
             rejected_lines_count=0
             #embed()
+            output_rows={"rows":[], "timestamp":timestamp.to_utc_datetime(), "is_valid_file":True}
             for line in file_lines:
-                if line_count<skip_lines:
+                if line_count<parameters["skipLeadingRows"]:
                     line_count+=1
                     continue
-                output_row={"is_line":True,"stacktrace":"","source_file":file_name}
+                output_row={"stacktrace":"","source_file":file_name}
                 splitted_line=line.split(",")
                 line_error=check_errors_in_line(splitted_line, schema)
                 if line_error=="":
@@ -134,40 +129,12 @@ class ReadCsv(beam.DoFn):
                 output_row["stacktrace"]=line_error
                 output_row["destination"]=message["destination"]
                 output_row["timestamp"]=timestamp.to_utc_datetime()
-                if line_count % 50==0:
-                    logging.warning('lines processed: '+str(line_count)+" , total lines: "+ str(len(file_lines)))
-                line_count+=1
-                yield output_row
-            monitoring_report={ "is_line":False,
-                                "event":"SUCCESS",
-                                "timestamp":timestamp.to_utc_datetime(),
-                                "number_inserted_rows":len(file_lines)-skip_lines-rejected_lines_count,
-                                "number_rejected_rows": rejected_lines_count}
+                output_rows["rows"].append(output_row)
             if rejected_lines_count>file_max_bad_rows:
-                monitoring_report["event"]="WARNING"
-                monitoring_report["number_inserted_rows"]=0
-                monitoring_report["number_rejected_rows"]=len(file_lines)-skip_lines
+                output_rows["is_valid_file"]=False
+            output_rows["number_invalid_rows"]=rejected_lines_count
             #embed()
-            yield monitoring_report
-"""
-def read_line(element):
-    line=element["data"]
-    schema=element["schema"]
-    output_row={"is_line":True,"stacktrace":"","source_file":element["source_file"]}
-    splitted_line=line.split(",")
-    line_error=check_errors_in_line(splitted_line, schema)
-    if line_error=="":
-        for index in range(len(schema)):
-            output_row[schema[index]['name']]=splitted_line[index]
-    else:
-        rejected_lines_count+=1
-    output_row["raw_data"]=splitted_line
-    output_row["stacktrace"]=line_error
-    output_row["destination"]=element["message"]["destination"]
-    output_row["timestamp"]=element["message"]["timestamp"]
-    output_row["id"]=element["message"]["id"]
-    return output_row
-
+            yield output_rows
 
 
 class SplitFileData(beam.DoFn):
@@ -181,9 +148,6 @@ class SplitFileData(beam.DoFn):
             if row["stacktrace"]=="" and not element["is_valid_file"]:
                 row["stacktrace"]="too_many_invalid_rows_in_file"
             yield row
-
-def split_file(element):
-    lines=element["data"].split
         
 
 
@@ -232,14 +196,15 @@ def get_start_monitoring_data(message):
     return output
 
 
-def log_element(element):
-    #embed()
-    return element
-
-
 # ### main
 
 def run():
+    # Command line arguments
+    opts, pipeline_opts = PARSER.parse_known_args()
+
+
+    
+    parameters["skipLeadingRows"] = int(opts.skipLeadingRows)
 
     
 
@@ -256,19 +221,14 @@ def run():
 
 
 
-    read_messages=(p
-            | 'MultipleReadFromPubSub' >> beam.io.MultipleReadFromPubSub(reads, with_attributes=True) #beam.io.ReadFromPubSub('projects/smartlive/topics/my_topic1', with_attributes=True)
-            | 'LogElement' >> beam.Map(log_element)
+    readData=(p
+            | 'MultipleReadFromPubSub' >> beam.io.MultipleReadFromPubSub(reads)#, with_attributes=True)
             | 'GetTimestamp' >> beam.ParDo(get_timestamp())
-            | "Window into Fixed Intervals" >> beam.WindowInto(
-                beam.window.FixedWindows(1),
-                trigger=AfterProcessingTime(5),
-                accumulation_mode=AccumulationMode.DISCARDING)
             )
 
     #partData=(readData | beam.Partition(partition_fn, 2))
 
-    start_monitoring=(read_messages
+    start_monitoring=(readData
             | 'Format Start Monitoring Report' >> beam.Map(get_start_monitoring_data)
             | 'WriteStartInMonitoringTable'>> beam.io.WriteToBigQuery(
                 table=OPTIONS.view_as(GoogleCloudOptions).project + ":" + DATASET + ".monitoring",
@@ -281,15 +241,13 @@ def run():
 
 
     
-    data=(read_messages
+    data_view=(readData
             #| 'Get CSV address' >> beam.Map(lambda element: element["fileURL"])
             | 'ParseJson' >> beam.Map(parse_json)
-            | 'Read CSV files' >> beam.ParDo(ReadCsv())
-            | 'Split words' >> beam.FlatMap(split_file))#beam.io.textio.ReadFromTextWithFilename("gs://testinsertbigquery/EtienneData/client1.csv"))
+            | 'Read CSV files' >> beam.ParDo(ReadCsv()))#beam.io.textio.ReadFromTextWithFilename("gs://testinsertbigquery/EtienneData/client1.csv"))
 
-    monitoring_branch=(data
-            | 'FilterMonitoringReports' >> beam.Filter(lambda element: element["is_line"]==False)
-            #| 'Format Monitoring Report' >> beam.Map(get_monitoring_data)
+    monitoring_branch=(data_view
+            | 'Format Monitoring Report' >> beam.Map(get_monitoring_data)
             | 'WriteInMonitoringTable'>> beam.io.WriteToBigQuery(
                 table=OPTIONS.view_as(GoogleCloudOptions).project + ":" + DATASET + ".monitoring",
                 schema=MONITORING_TABLE_SCHEMA,
@@ -299,16 +257,13 @@ def run():
                 write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
                 ))
     
-    lines=(data
-            #| 'Wait' >> beam.Wait.on(monitoring_branch)
-            #| 'Split file data in rows' >> beam.ParDo(SplitFileData())) 
-            | 'FilterLines' >> beam.Filter(lambda element: element["is_line"]==True))
+    rows_view=(data_view | 'Split file data in rows' >> beam.ParDo(SplitFileData()))
 
     #groups=(({"messages":readData,"csv":data_view})
     #    | 'Merge' >> beam.CoGroupByKey()
     #    | beam.Map(getResults))
 
-    (lines 
+    (rows_view 
             | 'Filter rejects' >> beam.Filter(lambda element: element["stacktrace"]!="")
             | 'Format error reports' >> beam.Map(get_reject_data)
             | 'WriteInRejectsTable'>> beam.io.WriteToBigQuery(
@@ -320,7 +275,7 @@ def run():
                 write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
                 ))
 
-    (lines 
+    (rows_view 
             | 'Get valid lines' >> beam.Filter(lambda element: element["stacktrace"]=="")
             | 'WriteWithDynamicDestination' >> beam.io.WriteToBigQuery(
                 table=get_destination_table,
@@ -334,9 +289,7 @@ def run():
     logging.getLogger().setLevel(logging.INFO)
     logging.info("Building pipeline ...")
 
-    p.run()#.wait_until_finish()
+    p.run().wait_until_finish()
 
 if __name__ == '__main__':
-    opts, pipeline_opts = PARSER.parse_known_args()
-    parameters["skipLeadingRows"] = int(opts.skipLeadingRows)
     run()

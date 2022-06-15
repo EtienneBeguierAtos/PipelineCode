@@ -18,12 +18,12 @@ STRUCTURE_SOURCE={
         {
             "name": "AGE",
             "mode": "NULLABLE",
-            "type": "INTEGER"
+            "type": "STRING"
         }
     ]  
   },
   "telephone": { 
-        "delimiter": ";",
+        "delimiter": ";",#"\r\n",
         "max_bad_rows" : 18,
         "encoding": "utf-8",
         "Schema" :[
@@ -35,13 +35,13 @@ STRUCTURE_SOURCE={
         {
             "name": "number",
             "mode": "NULLABLE",
-            "type": "INTEGER"
+            "type": "STRING"
         }
     ]  
   },
   "address": { 
         "delimiter": ";",
-        "max_bad_rows" : 18,
+        "max_bad_rows" : 0,
         "encoding": "utf-8",
         "Schema" :[
         {
@@ -60,7 +60,7 @@ STRUCTURE_SOURCE={
 
 
 TABLE_OUTPUT_SCHEMAS={
-    "etienne12":[
+    "age":[
         {
             "name": "NAME",
             "mode": "NULLABLE",
@@ -69,10 +69,10 @@ TABLE_OUTPUT_SCHEMAS={
         {
             "name": "AGE",
             "mode": "NULLABLE",
-            "type": "INTEGER"
+            "type": "STRING"
         }
     ],
-    "etienne13":[
+    "telephone":[
         {
             "name": "name",
             "mode": "NULLABLE",
@@ -81,10 +81,10 @@ TABLE_OUTPUT_SCHEMAS={
         {
             "name": "number",
             "mode": "NULLABLE",
-            "type": "INTEGER"
+            "type": "STRING"
         }
     ],
-    "etienne14":[
+    "address":[
         {
             "name": "name",
             "mode": "NULLABLE",
@@ -115,6 +115,11 @@ REJECT_SCHEMA={
             "name": "source_file",
             "mode": "NULLABLE",
             "type": "STRING"
+        },
+        {
+            "name": "raw_data",
+            "mode": "NULLABLE",
+            "type": "STRING"
         }]}
 
 
@@ -122,6 +127,11 @@ MONITORING_TABLE_SCHEMA={
     "fields":[
         {
             "name": "timestamp",
+            "mode": "NULLABLE",
+            "type": "STRING"
+        },
+        {
+            "name": "event",
             "mode": "NULLABLE",
             "type": "STRING"
         },

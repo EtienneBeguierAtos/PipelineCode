@@ -32,7 +32,7 @@ dict={"address":"gs://testinsertbigquery/EtienneData/tabledata2.csv","destinatio
 def run():
     with open(file_path, 'r') as j:
         data=j.read().splitlines()
-        for i in range(3):
+        for i in range(len(data)):
             element=data[i]
             print(element)
             #data = str({"name":"Jacques","age":62,"height":1.66})
