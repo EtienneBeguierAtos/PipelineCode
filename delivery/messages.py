@@ -31,14 +31,14 @@ file_path = "./message.json"
 def run():
     with open(file_path, 'r') as j:
         data=j.read().splitlines()
-        for i in range(len(data)):
-            element=data[i]
+        for i in range(1):
+            element=data[1]
             print(element)
             #data = str({"name":"Jacques","age":62,"height":1.66})
             # When you publish a message, the client returns a future.
-            publish_future1 = publisher.publish(topics[i], element.encode("utf-8"))
+            publish_future1 = publisher.publish(topics[2], element.encode("utf-8"))
             publish_futures.append(publish_future1)
-            time.sleep(21)
+            #time.sleep(21)
             #futures.wait(publish_futures, return_when=futures.ALL_COMPLETED)
             #publish_future2 = publisher.publish(topic_path2, element.encode("utf-8"))
             #publish_futures.append(publish_future2)
