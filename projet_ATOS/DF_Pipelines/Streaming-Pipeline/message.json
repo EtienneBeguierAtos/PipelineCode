@@ -1,0 +1,3 @@
+{"fileURL":"gs://etienne_files/client1.csv","destination":"age","partition_depth":[12,25],"partition_key":"AGE"}
+{"fileURL":"gs://etienne_files/telephone2.csv","destination":"telephone"}
+{"fileURL":"gs://etienne_files/address1.csv","destination":"address"}
